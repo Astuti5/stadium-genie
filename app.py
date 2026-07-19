@@ -25,6 +25,9 @@ Security notes:
     X-Frame-Options, Referrer-Policy, a restrictive Content-Security-Policy).
   - Flask's Jinja autoescaping protects templated HTML from XSS; free-text
     input is additionally sanitized before it reaches the model.
+  - Client identification for rate limiting prefers X-Forwarded-For (Vercel
+    sits behind a proxy, so request.remote_addr is otherwise the proxy's IP,
+    not the real client's — which would make every visitor share one bucket).
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ import os
 import time
 from collections import defaultdict, deque
 from threading import Lock
+from typing import Any
 
 from flask import Flask, Response, jsonify, render_template, request
 
@@ -60,8 +64,25 @@ VALID_SEVERITIES = {"low", "medium", "high", "critical"}
 # --- thread-safe in-memory rate limiter (per client IP) ---------------------
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMIT_MAX_REQUESTS = 20
-_request_log: dict[str, deque] = defaultdict(deque)
+_request_log: dict[str, deque[float]] = defaultdict(deque)
 _rate_lock = Lock()
+
+
+def get_client_id() -> str:
+    """
+    Best-effort client identifier for rate limiting.
+
+    Vercel (and most PaaS providers) terminate TLS at a proxy, so
+    request.remote_addr reflects the proxy's IP, not the visitor's — every
+    user would otherwise share a single rate-limit bucket. X-Forwarded-For
+    is set by Vercel's edge network and is trusted in this deployment
+    context; if self-hosting behind a different/untrusted proxy, validate
+    the proxy chain before trusting this header.
+    """
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
 
 
 def check_rate_limit(client_id: str) -> None:
@@ -76,6 +97,20 @@ def check_rate_limit(client_id: str) -> None:
         q.append(now)
 
 
+def parse_bool_flag(value: Any, field_name: str) -> bool:
+    """
+    Strictly validate a boolean-ish JSON field instead of silently coercing
+    with bool(value) — bool("false") is True in Python, which would let a
+    client send the string "false" and have it treated as truthy.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    raise InvalidInputError(f"{field_name} must be a boolean")
+
+
+# --- global middleware -------------------------------------------------------
 @app.after_request
 def set_security_headers(response: Response) -> Response:
     """Attach standard hardening headers to every response."""
@@ -98,11 +133,15 @@ def handle_invalid_input(e: InvalidInputError):
 
 @app.errorhandler(RateLimitExceededError)
 def handle_rate_limit(e: RateLimitExceededError):
-    return jsonify(error=str(e)), 429
+    response = jsonify(error=str(e))
+    response.headers["Retry-After"] = str(RATE_LIMIT_WINDOW_SECONDS)
+    return response, 429
 
 
 @app.errorhandler(AIServiceError)
 def handle_ai_error(e: AIServiceError):
+    # Log the real cause server-side only; the user-facing message (str(e))
+    # is already generic and safe to return as-is.
     logger.warning("AI service error: %s", e.__cause__ or e)
     return jsonify(error=str(e)), 503
 
@@ -117,32 +156,40 @@ def handle_payload_too_large(e):
     return jsonify(error="Request too large."), 413
 
 
+@app.errorhandler(500)
+def handle_internal_error(e):
+    # Catch-all so an unexpected exception never leaks a stack trace or
+    # internal detail to the client, even if a future code path forgets
+    # to raise one of the typed exceptions above.
+    logger.exception("Unhandled server error")
+    return jsonify(error="An unexpected error occurred."), 500
+
+
 # --- pages ---------------------------------------------------------------
 @app.route("/")
-def index():
+def index() -> str:
     return render_template("index.html")
 
 
 @app.route("/ops")
-def ops_dashboard():
+def ops_dashboard() -> str:
     return render_template("ops.html")
 
 
 @app.route("/api/health")
-def health():
+def health() -> Response:
     return jsonify(status="ok")
 
 
 # --- fan-facing API --------------------------------------------------------
 @app.route("/api/chat", methods=["POST"])
-def chat():
-    client_id = request.remote_addr or "unknown"
-    check_rate_limit(client_id)
+def chat() -> Response:
+    check_rate_limit(get_client_id())
 
     data = request.get_json(silent=True) or {}
     raw_message = data.get("message", "")
     section = data.get("section")
-    accessibility = bool(data.get("accessibility", False))
+    accessibility = parse_bool_flag(data.get("accessibility"), "accessibility")
 
     if section is not None and not isinstance(section, str):
         raise InvalidInputError("section must be a string")
@@ -155,7 +202,7 @@ def chat():
 
 
 @app.route("/api/emergency-exit/<gate_code>")
-def emergency_exit(gate_code: str):
+def emergency_exit(gate_code: str) -> Response:
     exit_info = emergency_exit_for_gate(gate_code)
     if not exit_info:
         raise NotFoundError("Unknown gate")
@@ -164,9 +211,8 @@ def emergency_exit(gate_code: str):
 
 # --- ops / staff-facing API (tournament operations vertical) ---------------
 @app.route("/api/ops/chat", methods=["POST"])
-def ops_chat():
-    client_id = request.remote_addr or "unknown"
-    check_rate_limit(client_id)
+def ops_chat() -> Response:
+    check_rate_limit(get_client_id())
 
     data = request.get_json(silent=True) or {}
     raw_message = data.get("message", "")
@@ -183,7 +229,7 @@ def ops_chat():
 
 
 @app.route("/api/ops/incidents", methods=["GET"])
-def get_incidents():
+def get_incidents() -> Response:
     gate = request.args.get("gate")
     unresolved_only = request.args.get("unresolved_only", "false").lower() == "true"
     incidents = list_incidents(gate=gate, unresolved_only=unresolved_only)
@@ -191,7 +237,7 @@ def get_incidents():
 
 
 @app.route("/api/ops/incidents", methods=["POST"])
-def create_incident():
+def create_incident() -> tuple[Response, int]:
     data = request.get_json(silent=True) or {}
     gate = data.get("gate", "")
     category = data.get("category", "")
@@ -213,7 +259,7 @@ def create_incident():
 
 
 @app.route("/api/ops/incidents/<int:incident_id>/resolve", methods=["POST"])
-def resolve_incident_route(incident_id: int):
+def resolve_incident_route(incident_id: int) -> Response:
     if not resolve_incident(incident_id):
         raise NotFoundError("Incident not found")
     return jsonify(resolved=True, id=incident_id)
