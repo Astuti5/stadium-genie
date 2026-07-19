@@ -125,6 +125,10 @@ def get_ai_response(
     system_prompt = OPS_SYSTEM_PROMPT if persona == "ops" else FAN_SYSTEM_PROMPT
 
     try:
+        # --- TEMPORARY DEBUG LOGGING (remove after diagnosing) ---
+        print("API key exists:", bool(key))
+        print("API key length:", len(key) if key else 0)
+        # -----------------------------------------------------------
         client = _get_client(key)
         response = client.messages.create(
             model=MODEL_NAME,
@@ -135,6 +139,9 @@ def get_ai_response(
         text_parts: list[str] = [block.text for block in response.content if block.type == "text"]
         return "".join(text_parts).strip()
     except Exception as exc:
+        # --- TEMPORARY DEBUG LOGGING (remove after diagnosing) ---
+        print("AI call failed:", repr(exc))
+        # -----------------------------------------------------------
         # Don't leak internal error details (security best practice) —
         # but the original exception is available in __cause__ for logging.
         raise AIServiceError(
