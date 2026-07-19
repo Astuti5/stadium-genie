@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StadiumGenie Ops — Tournament Operations Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <a href="#ops-chat-form" class="skip-link">Skip to assistant input</a>
+
+  <header>
+    <h1>🏟️ StadiumGenie Ops</h1>
+    <p class="subtitle">Tournament Operations Dashboard — staff only</p>
+    <nav><a href="/" class="nav-link">Switch to Fan View</a></nav>
+  </header>
+
+  <main>
+    <section class="context-panel" aria-label="Gate filter">
+      <label for="ops-gate-input">Filter by gate (optional)</label>
+      <input id="ops-gate-input" type="text" placeholder="e.g. C" maxlength="2">
+    </section>
+
+    <section class="context-panel" aria-labelledby="crowd-heading">
+      <h2 id="crowd-heading">Crowd Density</h2>
+      <div id="crowd-density-list" aria-live="polite">Loading…</div>
+    </section>
+
+    <section class="context-panel" aria-labelledby="incident-heading">
+      <h2 id="incident-heading">Log an Incident</h2>
+      <form id="incident-form">
+        <label for="incident-gate">Gate</label>
+        <input id="incident-gate" type="text" maxlength="2" required placeholder="e.g. C">
+
+        <label for="incident-category">Category</label>
+        <select id="incident-category" required>
+          <option value="crowd_surge">Crowd surge</option>
+          <option value="medical">Medical</option>
+          <option value="security">Security</option>
+          <option value="facility">Facility</option>
+          <option value="other">Other</option>
+        </select>
+
+        <label for="incident-severity">Severity</label>
+        <select id="incident-severity" required>
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+          <option value="critical">Critical</option>
+        </select>
+
+        <label for="incident-description">Description</label>
+        <input id="incident-description" type="text" maxlength="300" required placeholder="Brief description">
+
+        <button type="submit">Log Incident</button>
+      </form>
+      <p id="incident-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="context-panel" aria-labelledby="active-incidents-heading">
+      <h2 id="active-incidents-heading">Active Incidents</h2>
+      <div id="incident-list" aria-live="polite">Loading…</div>
+    </section>
+
+    <section id="ops-chat-window" aria-live="polite" aria-label="Ops assistant conversation">
+      <div class="message assistant">
+        Ops assistant ready. Ask about crowd status, active incidents, or recommended actions for a gate.
+      </div>
+    </section>
+
+    <form id="ops-chat-form">
+      <label for="ops-message-input" class="visually-hidden">Ask the ops assistant</label>
+      <input id="ops-message-input" type="text" placeholder="e.g. What's the status at Gate C?" autocomplete="off" maxlength="500" required>
+      <button type="submit">Send</button>
+    </form>
+    <p id="ops-status-line" role="status" aria-live="polite"></p>
+  </main>
+
+<script src="{{ url_for('static', filename='ops.js') }}"></script>
+</body>
+</html>
